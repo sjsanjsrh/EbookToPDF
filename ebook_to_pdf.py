@@ -5,13 +5,40 @@ import pyautogui
 import time
 from pynput import mouse
 import PyQt5
-from PIL import Image
+from PIL import Image, ImageChops
 
 page = 0   # 찍을 페이지 수  
 picture_size = [] #왼쪽 상단 좌표 , 오른쪽 하단 좌표
 
 next_page = []  #다음 페이지의 좌표
 msg = "순서대로 진행하세요. 버튼에 마우스를 올리면 설명이 나옵니다."
+
+def _images_different(img_a, img_b):
+    # Bounding box is None only when images are identical
+    return ImageChops.difference(img_a, img_b).getbbox() is not None
+
+def wait_for_region_stable(region, require_change=False, timeout=8.0, poll_interval=0.3, stable_checks=2):
+    """Poll the target region until it visually changes and then stabilises."""
+    start = time.time()
+    baseline = pyautogui.screenshot(region=region)
+    change_seen = not require_change
+    stable_hits = 0
+
+    while time.time() - start < timeout:
+        time.sleep(poll_interval)
+        current = pyautogui.screenshot(region=region)
+
+        if _images_different(baseline, current):
+            change_seen = True
+            baseline = current
+            stable_hits = 0
+            continue
+
+        stable_hits += 1
+        if change_seen and stable_hits >= stable_checks:
+            return True
+
+    return False
 
 def get_mouse_point(x, y, button, pressed):
     if pressed and button==mouse.Button.left: 
@@ -123,15 +150,36 @@ class MyApp(QMainWindow):
             self.status(msg)
             self.pbar.setValue(60)
     def get_picture(self):
-        rest_of_percent = 40//page
+        if page <= 0:
+            self.status("먼저 캡쳐할 페이지 수를 입력하세요.")
+            return
+        if len(picture_size) < 4 or not next_page:
+            self.status("좌표 정보를 모두 입력한 뒤 다시 실행하세요.")
+            return
+
+        capture_region = (
+            picture_size[0],
+            picture_size[1],
+            picture_size[2] - picture_size[0],
+            picture_size[3] - picture_size[1],
+        )
+
+        if capture_region[2] <= 0 or capture_region[3] <= 0:
+            self.status("좌표가 잘못되었습니다. 다시 지정해주세요.")
+            return
+
+        rest_of_percent = 40 // page
         for i in range(page):
-            if len(picture_size) >= 4:
-                pyautogui.screenshot("%s.png" % i, region=(picture_size[0], picture_size[1],
-                picture_size[2]-picture_size[0],picture_size[3]-picture_size[1]))
-            pyautogui.click(*next_page)
-            rest_of_percent += 40//page
-            self.pbar.setValue(60+rest_of_percent)
-            time.sleep(0.8)
+            if not wait_for_region_stable(capture_region, require_change=False):
+                self.status("화면 안정 대기 시간이 초과되어도 캡쳐를 계속합니다.")
+            pyautogui.screenshot("%s.png" % i, region=capture_region)
+            if i < page - 1:
+                pyautogui.click(*next_page)
+                if not wait_for_region_stable(capture_region, require_change=True):
+                    self.status("다음 페이지 로딩 대기 시간이 초과되어도 계속 진행합니다.")
+            rest_of_percent += 40 // page
+            self.pbar.setValue(60 + rest_of_percent)
+
         self.pbar.setValue(100)
         msg = "이미지 캡쳐 완료. PDF메뉴를 눌러 PDF로 변환하세요!"
         self.status(msg)
